@@ -7397,6 +7397,53 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }).pipe(Effect.scoped, Effect.provide(testLayer)),
     );
 
+    it.effect("accepts a URL card when its server confirms the elicitation complete", () =>
+      Effect.gen(function* () {
+        const { harness, elicit, awaitCard, runtimeRequests } = yield* startElicitationTurn();
+        const answer = yield* elicit({
+          ...approvalOnly,
+          mode: "url",
+          url: "https://example.com/authorize",
+          elicitationId: "login-1",
+        });
+        const request = yield* awaitCard(1);
+        const complete = (serverName: string, elicitationId: string) =>
+          harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "elicitation_complete",
+              mcp_server_name: serverName,
+              elicitation_id: elicitationId,
+              uuid: "00000000-0000-4000-8000-000000000301",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+
+        yield* complete("deploys", "login-2");
+        yield* complete("builds", "login-1");
+        assert.isUndefined(answer.pollUnsafe());
+
+        yield* complete("deploys", "login-1");
+        assert.deepEqual(yield* Fiber.join(answer), { action: "accept" });
+        const resolved = yield* Queue.take(harness.runtimeRequestReceipts);
+        assert.deepInclude(resolved.runtimeRequest, {
+          id: request.id,
+          status: "resolved",
+          decision: "accept",
+        });
+        assert.equal(
+          harness.events.findLast((e) => e.type === "turn_item.updated")?.turnItem.status,
+          "completed",
+        );
+
+        yield* complete("deploys", "login-1");
+        assert.equal(runtimeRequests().length, 2);
+        yield* Effect.flip(
+          harness.runtime.respondToRuntimeRequest({ requestId: request.id, decision: "accept" }),
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    );
+
     it.effect.each(["decline", "cancel"] as const)("answers %s with that action", (decision) =>
       Effect.gen(function* () {
         const { harness, elicit, awaitCard } = yield* startElicitationTurn();

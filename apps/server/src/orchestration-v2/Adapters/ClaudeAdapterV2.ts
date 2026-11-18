@@ -5290,6 +5290,10 @@ type PendingClaudeRuntimeRequest =
       readonly type: "approval";
       readonly requestKind: ProviderRequestKind;
       readonly decision: Deferred.Deferred<ClaudeApprovalResponse, never>;
+      readonly urlElicitation?: {
+        readonly key: string;
+        readonly complete: Effect.Effect<void>;
+      };
     }
   | {
       readonly type: "user_input";
@@ -12046,6 +12050,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly message: SDKMessage;
         }) {
           const message = input.message;
+          if (message.type === "system" && message.subtype === "elicitation_complete") {
+            // MCP: ignore IDs that are unknown or already answered.
+            const key = `${message.mcp_server_name}\u0000${message.elicitation_id}`;
+            for (const pending of (yield* Ref.get(pendingRuntimeRequests)).values()) {
+              if (pending.type === "approval" && pending.urlElicitation?.key === key) {
+                yield* pending.urlElicitation.complete;
+              }
+            }
+            return;
+          }
           const context = yield* Ref.get(activeTurn);
           const liveQuery = yield* Ref.get(queryContext);
           // The API answering again is recovery; a long text or tool input block emits nothing
@@ -12512,12 +12526,50 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               request.mode === "url" ? MCP_URL_ELICITATION_OPTIONS : CLAUDE_MCP_ELICITATION_OPTIONS,
           });
           const decision = yield* Deferred.make<ClaudeApprovalResponse>();
+          // The server's elicitation/complete answers the card as Continue would.
+          const completeFromServer = Effect.gen(function* () {
+            if (!(yield* Deferred.succeed(decision, { decision: "accept" }))) return;
+            const now = yield* DateTime.now;
+            yield* emitProviderEvent({
+              type: "node.updated",
+              driver: CLAUDE_PROVIDER,
+              node: { ...artifacts.node, status: "completed", completedAt: now },
+            });
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: {
+                ...artifacts.turnItem,
+                status: "completed",
+                completedAt: now,
+                updatedAt: now,
+              },
+            });
+            yield* emitProviderEvent({
+              type: "runtime_request.updated",
+              driver: CLAUDE_PROVIDER,
+              runtimeRequest: {
+                ...artifacts.request,
+                status: "resolved",
+                resolvedAt: now,
+                decision: "accept",
+              },
+            });
+          });
           yield* Ref.update(pendingRuntimeRequests, (current) => {
             const updated = new Map(current);
             updated.set(String(artifacts.request.id), {
               type: "approval",
               requestKind: "mcp-elicitation",
               decision,
+              ...(request.mode === "url" && request.elicitationId !== undefined
+                ? {
+                    urlElicitation: {
+                      key: `${request.serverName}\u0000${request.elicitationId}`,
+                      complete: completeFromServer,
+                    },
+                  }
+                : {}),
             });
             return updated;
           });

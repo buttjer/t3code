@@ -63,6 +63,7 @@ See the [provider guides](./install.md#providers) for setup and provider-specifi
 
 When an MCP server in a Claude or Codex thread asks you to complete steps in a browser, open the link
 in its approval request, complete the steps in your browser, then choose **Continue**.
+In a Claude thread, the request continues on its own when the MCP server reports the browser steps as done.
 The link opens on the device you are using, including when the agent runs remotely.
 A localhost link points to your current device; a remotely running MCP server must provide a link reachable from that device.
 You can decline or cancel instead. Browser requests still need your response in
